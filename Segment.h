@@ -8,8 +8,10 @@ struct SegmentDescriptor
 	bool valid;
 	size_t limit;
 	size_t pageTableIndex;
+	bool shared;
+	size_t refCount;
 
-	SegmentDescriptor(): valid(false),limit(0),pageTableIndex(0){}
+	SegmentDescriptor(): valid(false),limit(0),pageTableIndex(0),shared(false),refCount(0){}
 };
 
 class SegmentTable {
