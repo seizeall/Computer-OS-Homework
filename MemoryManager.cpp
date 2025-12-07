@@ -1,19 +1,17 @@
 #include "MemoryManager.h"
 #include <iostream>
-#include <cmath>    // std::ceil
 
 using namespace std;
 
 /**
- * ¹¹Ôìº¯ÊıÊµÏÖ
- * ¸ù¾İÒ³´óĞ¡ºÍÖ¡Êı³õÊ¼»¯ÎïÀíÄÚ´æºÍ¿ÕÏĞÖ¡ÁĞ±í¡£
+ * æ„é€ å‡½æ•°:
+ *  - åˆå§‹åŒ–ç‰©ç†å†…å­˜(å…¨éƒ¨æ¸…0)
+ *  - åˆå§‹åŒ–ç©ºé—²å¸§åˆ—è¡¨(0 ~ frameCount-1)
  */
 MemoryManager::MemoryManager(size_t pageSizeBytes, size_t numFrames)
     : pageSize(pageSizeBytes),
     frameCount(numFrames),
-    physicalMemory(pageSizeBytes* numFrames, 0) // ·ÖÅäÎïÀíÄÚ´æ²¢³õÊ¼»¯Îª0
-{
-    // ³õÊ¼»¯¿ÕÏĞÖ¡ÁĞ±í:Ò»¿ªÊ¼ËùÓĞÖ¡¶¼ÊÇ¿ÕÏĞµÄ
+    physicalMemory(pageSizeBytes* numFrames, 0) {
     freeFrames.reserve(numFrames);
     for (size_t i = 0; i < numFrames; ++i) {
         freeFrames.push_back(i);
@@ -21,54 +19,45 @@ MemoryManager::MemoryManager(size_t pageSizeBytes, size_t numFrames)
 }
 
 /**
- * ´Ó¿ÕÏĞÖ¡ÁĞ±íÖĞ·ÖÅäÒ»¸öÎïÀíÖ¡
+ * åˆ†é…ä¸€ä¸ªç©ºé—²ç‰©ç†å¸§(çº¿ç¨‹å®‰å…¨å†…éƒ¨è°ƒç”¨,éœ€åœ¨å¤–éƒ¨åŠ é”æˆ–åªåœ¨ç±»æ–¹æ³•å†…è°ƒç”¨)
  */
 bool MemoryManager::allocateFrame(size_t& frameNumber) {
     if (freeFrames.empty()) {
-        return false; // Ã»ÓĞ¿ÕÏĞÖ¡
+        return false;
     }
-    // ¼òµ¥²ßÂÔ:È¡ÏòÁ¿Ä©Î²µÄÖ¡ºÅ(Õ»Ê½·ÖÅä)
     frameNumber = freeFrames.back();
     freeFrames.pop_back();
     return true;
 }
 
 /**
- * ¸ù¾İ¶Î´óĞ¡¼ÆËãĞèÒªµÄÒ³Êı(ÏòÉÏÈ¡Õû)
- * ÀıÈç:
- * pageSize=1024, segmentSize=2049 -> ĞèÒª3Ò³
+ * è®¡ç®—éœ€è¦çš„é¡µæ•°(å‘ä¸Šå–æ•´)
  */
 size_t MemoryManager::calcNumPages(size_t segmentSizeBytes) const {
-    return (segmentSizeBytes + pageSize - 1) / pageSize; // ÏòÉÏÈ¡Õû
+    return (segmentSizeBytes + pageSize - 1) / pageSize;
 }
 
 /**
- * ´´½¨Ò»¸öĞÂµÄ¶Î
- * ²½Öè:
- * 1. ¼ÆËã¸Ã¶ÎĞèÒªµÄÒ³Êı
- * 2. ¼ì²é¿ÕÏĞÖ¡ÊÇ·ñ×ã¹»
- * 3. ·ÖÅäÒ»¸öĞÂµÄÒ³±í²¢ÎªÃ¿Ò³·ÖÅäÎïÀíÖ¡
- * 4. ÔÚ¶Î±íÖĞÔö¼ÓÒ»Ïî,¼ÇÂ¼¶Î³¤¶ÈºÍÒ³±íË÷Òı
+ * åˆ›å»ºä¸€ä¸ªæ®µ
+ * shared=true è¡¨ç¤ºå…±äº«æ®µ,
+ * shared=false è¡¨ç¤ºæ™®é€šç§æœ‰æ®µã€‚
  */
-size_t MemoryManager::createSegment(size_t segmentSizeBytes) {
-    size_t numPages = calcNumPages(segmentSizeBytes);
+size_t MemoryManager::createSegment(size_t segmentSizeBytes, bool shared) {
+    lock_guard<mutex> lock(mtx); // æ•´ä¸ªåˆ›å»ºè¿‡ç¨‹åŠ é”,é˜²æ­¢å¹¶å‘å¹²æ‰°
 
-    // ¼òµ¥¼ì²é:Èç¹ûÎïÀíÖ¡ÊıÁ¿²»×ãÒÔÈİÄÉ¸Ã¶ÎµÄËùÓĞÒ³,Ôò´´½¨Ê§°Ü
+    size_t numPages = calcNumPages(segmentSizeBytes);
     if (numPages > freeFrames.size()) {
-        cerr << "Failed to create segment: not enough physical frames." << endl;
-        return static_cast<size_t>(-1); // ÓÃ-1±íÊ¾Ê§°Ü
+        cerr << "[MemoryManager] Failed to create segment: not enough frames." << endl;
+        return static_cast<size_t>(-1);
     }
 
-    // ´´½¨Ò»¸öÒ³±í¶ÔÏó,ÄÚ²¿°üº¬numPages¸öPageTableEntry
+    // åˆ›å»ºé¡µè¡¨å¹¶ä¸ºæ¯é¡µåˆ†é…ç‰©ç†å¸§
     PageTable pt(numPages);
-
-    // ÎªÃ¿¸öÂß¼­Ò³·ÖÅäÒ»¸öÎïÀíÖ¡
     for (size_t i = 0; i < numPages; ++i) {
         size_t frameNumber;
-        bool ok = allocateFrame(frameNumber);
-        if (!ok) {
-            // ÀíÂÛÉÏ²»»á½øÈë´Ë·ÖÖ§,ÒòÎªÇ°ÃæÒÑ¾­¼ì²énumPages<=freeFrames.size()
-            cerr << "Unexpected error: no free frame during segment creation." << endl;
+        if (!allocateFrame(frameNumber)) {
+            // æŒ‰ç†è¯´ä¸ä¼šåˆ°è¿™é‡Œ,å› ä¸ºå‰é¢å·²ç»æ£€æŸ¥è¿‡
+            cerr << "[MemoryManager] Unexpected: no free frame during createSegment." << endl;
             return static_cast<size_t>(-1);
         }
         PageTableEntry* entry = pt.getEntry(i);
@@ -76,80 +65,108 @@ size_t MemoryManager::createSegment(size_t segmentSizeBytes) {
         entry->frameNumber = frameNumber;
     }
 
-    // ½«ĞÂÒ³±í¼ÓÈëÈ«¾ÖÒ³±íÊı×éÖĞ,¼ÇÂ¼ÆäË÷Òı
+    // å°†é¡µè¡¨åŠ å…¥å…¨å±€é¡µè¡¨æ•°ç»„
     size_t pageTableIndex = pageTables.size();
     pageTables.push_back(pt);
 
-    // ¹¹ÔìÒ»¸ö¶Î±íÏî
+    // æ„é€ æ®µè¡¨é¡¹
     SegmentDescriptor desc;
     desc.valid = true;
-    desc.limit = segmentSizeBytes;     // ¶Î³¤¶È(×Ö½Ú)
-    desc.pageTableIndex = pageTableIndex; // Ö¸Ïò±¾¶Î¶ÔÓ¦µÄÒ³±í
+    desc.limit = segmentSizeBytes;
+    desc.pageTableIndex = pageTableIndex;
+    desc.shared = shared;
+    desc.refCount = 1; // åˆå§‹æŒæœ‰è€…è®¡æ•°ä¸º1
 
-    // ½«¶Î±íÏî¼ÓÈë¶Î±í,·µ»Ø¸Ã¶ÎºÅ
-    size_t segNo = segmentTable.addSegment(desc);
-    return segNo;
+    // æ”¾å…¥å…¨å±€æ®µè¡¨,è¿”å›å…¨å±€æ®µå·
+    size_t globalSegNo = segmentTable.addSegment(desc);
+    return globalSegNo;
 }
 
 /**
- * Âß¼­µØÖ·->ÎïÀíµØÖ·×ª»»
- * ÊäÈë:
- *  la.segment: ¶ÎºÅ
- *  la.offset: ¶ÎÄÚÆ«ÒÆ
- *
- * ²½Öè:
- * 1. ¸ù¾İ¶ÎºÅ´Ó¶Î±íÖĞÈ¡³ö¶Î±íÏî,¼ì²éÊÇ·ñÓĞĞ§
- * 2. ½øĞĞ¶Î½çÏŞ¼ì²é:offset < limit
- * 3. ½«offset²ğ·Ö³ÉÒ³ºÅpageNoºÍÒ³ÄÚÆ«ÒÆpageOffset
- * 4. ¸ù¾İ¶Î±íÏîÖĞµÄpageTableIndexÕÒµ½¶ÔÓ¦Ò³±í
- * 5. ÔÚÒ³±íÖĞÕÒµ½pageNo¶ÔÓ¦µÄÒ³±íÏî,¼ì²épresentÎ»
- * 6. ÎïÀíµØÖ· = frameNumber * pageSize + pageOffset
+ * é”€æ¯ä¸€ä¸ªå…¨å±€æ®µ:
+ *  - ä»…å½“ refCount == 0 æ—¶æ‰çœŸæ­£é‡Šæ”¾
+ *  - å¦åˆ™åªæ˜¯å‡å¼•ç”¨,ä¸åšçœŸå®å›æ”¶(æ­¤å¤„ç”±ä¸Šå±‚ä¿è¯åªåœ¨refCountä¸º0æ—¶è°ƒç”¨)
  */
-bool MemoryManager::translate(const LogicalAddress& la, size_t& physicalAddress) const {
-    // 1. ²é¶Î±í
-    const SegmentDescriptor* segDesc = segmentTable.getSegment(la.segment);
-    if (segDesc == nullptr || !segDesc->valid) {
-        cerr << "Translation failed: invalid segment number " << la.segment << endl;
+bool MemoryManager::destroySegment(size_t globalSegNo) {
+    lock_guard<mutex> lock(mtx);
+
+    SegmentDescriptor* seg = segmentTable.getSegment(globalSegNo);
+    if (!seg || !seg->valid) {
+        cerr << "[MemoryManager] destroySegment: invalid segment " << globalSegNo << endl;
         return false;
     }
 
-    // 2. ¶Î½çÏŞ¼ì²é(·ÀÖ¹¶ÎÄÚÆ«ÒÆÔ½½ç)
-    if (la.offset >= segDesc->limit) {
-        cerr << "Translation failed: offset out of segment limit." << endl;
+    if (seg->refCount != 0) {
+        cerr << "[MemoryManager] destroySegment: refCount != 0, cannot destroy." << endl;
         return false;
     }
 
-    // 3. ²ğ·ÖoffsetÎªÒ³ºÅÓëÒ³ÄÚÆ«ÒÆ
-    size_t pageNo = la.offset / pageSize;       // Âß¼­Ò³ºÅ
-    size_t pageOffset = la.offset % pageSize;   // Ò³ÄÚÆ«ÒÆ
+    // æ‰¾åˆ°å¯¹åº”é¡µè¡¨,æŠŠæ‰€æœ‰ç‰©ç†å¸§å›æ”¶åˆ° freeFrames ä¸­
+    if (seg->pageTableIndex >= pageTables.size()) {
+        cerr << "[MemoryManager] destroySegment: invalid pageTableIndex." << endl;
+        return false;
+    }
 
-    // 4. »ñÈ¡¶ÔÓ¦µÄÒ³±í
+    PageTable& pt = pageTables[seg->pageTableIndex];
+    for (size_t i = 0; i < pt.size(); ++i) {
+        PageTableEntry* entry = pt.getEntry(i);
+        if (entry->present) {
+            freeFrames.push_back(entry->frameNumber);
+            entry->present = false;
+        }
+    }
+
+    // å°†æ®µæ ‡è®°ä¸ºæ— æ•ˆ
+    seg->valid = false;
+    return true;
+}
+
+/**
+ * ä½¿ç”¨å…¨å±€æ®µå· + æ®µå†…åç§» åšåœ°å€è½¬æ¢
+ * (å†…éƒ¨å·¥å…·å‡½æ•°,å¯¹å¤– translateGlobal æä¾›å°è£…)
+ */
+bool MemoryManager::translateGlobal(size_t globalSegNo, uint32_t offset, size_t& physicalAddress) const {
+    lock_guard<mutex> lock(mtx);
+
+    // 1. æŸ¥æ®µè¡¨
+    const SegmentDescriptor* segDesc = segmentTable.getSegment(globalSegNo);
+    if (!segDesc || !segDesc->valid) {
+        cerr << "[MemoryManager] translateGlobal: invalid segment " << globalSegNo << endl;
+        return false;
+    }
+
+    // 2. æ®µç•Œé™æ£€æŸ¥
+    if (offset >= segDesc->limit) {
+        cerr << "[MemoryManager] translateGlobal: offset out of range." << endl;
+        return false;
+    }
+
+    // 3. æ‹†åˆ†é¡µå·+é¡µå†…åç§»
+    size_t pageNo = offset / pageSize;
+    size_t pageOffset = offset % pageSize;
+
     if (segDesc->pageTableIndex >= pageTables.size()) {
-        cerr << "Translation failed: invalid page table index in segment descriptor." << endl;
+        cerr << "[MemoryManager] translateGlobal: invalid pageTableIndex." << endl;
         return false;
     }
     const PageTable& pt = pageTables[segDesc->pageTableIndex];
 
-    // ¼ì²éÒ³ºÅÊÇ·ñÔÚÒ³±í·¶Î§ÄÚ
     if (pageNo >= pt.size()) {
-        cerr << "Translation failed: page number out of range." << endl;
+        cerr << "[MemoryManager] translateGlobal: page number out of range." << endl;
         return false;
     }
 
-    // 5. ²éÒ³±íÏî
     const PageTableEntry* entry = pt.getEntry(pageNo);
-    if (entry == nullptr || !entry->present) {
-        cerr << "Translation failed: page not present in memory." << endl;
+    if (!entry || !entry->present) {
+        cerr << "[MemoryManager] translateGlobal: page not present." << endl;
         return false;
     }
 
-    // 6. ¼ÆËãÎïÀíµØÖ·
     size_t frameNumber = entry->frameNumber;
     physicalAddress = frameNumber * pageSize + pageOffset;
 
-    // ÔÙ×öÒ»¸ö¼òµ¥µÄ°²È«ĞÔ¼ì²é:È·±£ÎïÀíµØÖ·Ã»ÓĞÔ½¹ıÎïÀíÄÚ´æ
     if (physicalAddress >= physicalMemory.size()) {
-        cerr << "Translation failed: physical address out of range." << endl;
+        cerr << "[MemoryManager] translateGlobal: physical address out of range." << endl;
         return false;
     }
 
@@ -157,25 +174,48 @@ bool MemoryManager::translate(const LogicalAddress& la, size_t& physicalAddress)
 }
 
 /**
- * Í¨¹ıÂß¼­µØÖ·Ğ´Ò»¸ö×Ö½Úµ½ÎïÀíÄÚ´æ
+ * translate(const LogicalAddress&) å…¼å®¹é˜¶æ®µ1æ¥å£:
+ *  - å°† la.segment è§†ä¸ºâ€œå…¨å±€æ®µå·â€
  */
-bool MemoryManager::writeByte(const LogicalAddress& la, uint8_t value) {
+bool MemoryManager::translate(const LogicalAddress& la, size_t& physicalAddress) const {
+    return translateGlobal(la.segment, la.offset, physicalAddress);
+}
+
+/**
+ * å…¨å±€å†™ä¸€ä¸ªå­—èŠ‚
+ */
+bool MemoryManager::writeByteGlobal(size_t globalSegNo, uint32_t offset, uint8_t value) {
     size_t pa;
-    if (!translate(la, pa)) {
-        return false; // µØÖ·×ª»»Ê§°Ü
+    if (!translateGlobal(globalSegNo, offset, pa)) {
+        return false;
     }
+    lock_guard<mutex> lock(mtx); // å†™ç‰©ç†å†…å­˜æ—¶åŠ é”
     physicalMemory[pa] = value;
     return true;
 }
 
 /**
- * Í¨¹ıÂß¼­µØÖ·´ÓÎïÀíÄÚ´æ¶ÁÒ»¸ö×Ö½Ú
+ * å…¨å±€è¯»ä¸€ä¸ªå­—èŠ‚
  */
-bool MemoryManager::readByte(const LogicalAddress& la, uint8_t& value) const {
+bool MemoryManager::readByteGlobal(size_t globalSegNo, uint32_t offset, uint8_t& value) const {
     size_t pa;
-    if (!translate(la, pa)) {
-        return false; // µØÖ·×ª»»Ê§°Ü
+    if (!translateGlobal(globalSegNo, offset, pa)) {
+        return false;
     }
+    lock_guard<mutex> lock(mtx); // è¯»ç‰©ç†å†…å­˜æ—¶åŒæ ·åŠ é”,ç¡®ä¿ä¸å†™æ“ä½œäº’æ–¥
     value = physicalMemory[pa];
     return true;
+}
+
+/**
+ * æ®µè¡¨è®¿é—®æ¥å£
+ */
+SegmentDescriptor* MemoryManager::getSegmentDescriptor(size_t globalSegNo) {
+    lock_guard<mutex> lock(mtx);
+    return segmentTable.getSegment(globalSegNo);
+}
+
+const SegmentDescriptor* MemoryManager::getSegmentDescriptor(size_t globalSegNo) const {
+    lock_guard<mutex> lock(mtx);
+    return segmentTable.getSegment(globalSegNo);
 }
